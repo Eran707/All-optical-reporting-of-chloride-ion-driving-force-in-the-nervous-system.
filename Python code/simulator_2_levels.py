@@ -12,6 +12,7 @@ import time
 
 import h5py
 import numpy as np
+import os
 
 import compartment
 from common import \
@@ -28,7 +29,18 @@ class Simulator:
         """
 
         self.file_name = file_name
-        self.file_name = "\ " + file_name
+        current_folder = os.getcwd()
+
+        # Get the parent folder of the current working directory
+        parent_folder = os.path.dirname(os.path.abspath(current_folder))
+
+        hdf5_folder = os.path.join(parent_folder, "HDF5_files")
+
+        # Create the "HDF5_files" folder if it doesn't exist
+        if not os.path.exists(hdf5_folder):
+            os.makedirs(hdf5_folder)
+
+        self.file_name = os.path.join(hdf5_folder, file_name)
 
         try:
             with h5py.File(self.file_name, mode='w') as self.hdf:
@@ -37,9 +49,10 @@ class Simulator:
                 self.hdf.create_group("TIMING")
 
                 print("simulation file ('" + file_name + "') created in base directory")
-        except:
-            raise Exception("File not created")
+        except OSError as e:
+            raise Exception(f"Error creating file: {e}")
 
+        self.L1, self.L2 = None, None
         self.num_comps = 0
         self.one_percent_t = 0
         self.interval_num = 1
@@ -69,17 +82,19 @@ class Simulator:
         self.g_extra_on = False
         self.current_on = False
 
+        self.KCC2_change_on, self.KCC2_change_setup = False, False
+        self.KCC2_change_start_t, self.KCC2_change_end_t, self.KCC2_final, self.KCC2_change_delta = 0, 0, 0, 0
+        self.p_kcc2 = p_kcc2
+
     def add_compartment(self, comp=compartment):
         """
         Adding compartment object to the simulator
         @param comp: compartment object
         """
 
-        new_comp = comp.get_array(time=0)
         with h5py.File(self.file_name, mode='a') as self.hdf:
             group = self.hdf.get('COMPARTMENTS')
-            subgroup = group.create_group(name=comp.name)
-            # subgroup.create_dataset(name='0', data=new_comp)
+            group.create_group(name=comp.name)
 
         self.num_comps += 1
         self.comp_arr.append(comp)
@@ -168,6 +183,21 @@ class Simulator:
         self.adjust_cl = adjust_cl
         self.target_vm = target_vm
 
+    def set_KCC2_change(self, start_t, end_t, final_KCC2_value=0):
+        self.KCC2_change_on = True
+        self.KCC2_change_start_t = start_t
+        self.KCC2_change_end_t = end_t
+        self.KCC2_final = final_KCC2_value
+        self.KCC2_change_setup = True
+
+    def calc_KCC2_value(self):
+        if self.KCC2_change_setup:
+            KCC2_change = self.KCC2_final - self.L1.p_kcc2
+            self.KCC2_change_delta = (KCC2_change * self.dt) / (self.KCC2_change_end_t - self.KCC2_change_start_t)
+            self.KCC2_change_setup = False
+
+        self.p_kcc2 += self.KCC2_change_delta
+
     def set_g_extra(self, g_extra=32e-4 / F, start_t=3000, end_t=7000, target_vm=-58.9e-3):
         self.g_extra_on = True
         self.g_extra_start_t = start_t
@@ -187,7 +217,6 @@ class Simulator:
                     max_neurotransmitter=1e-3, synapse_conductance=1e-9):
         """
         function to add a synapse to a particular compartment
-        @param synapse_type: string,either 'Inhibitory' (GABAergic) or 'Excitatory' (Glutamatergic)
         @param start_t: float,start time for synaptic input
         @param duration: float,duration of synaptic input
         @param max_neurotransmitter: float,max neurotransmitter concentration in moles/liter
@@ -204,25 +233,42 @@ class Simulator:
         self.syn_max_nt_conc = max_neurotransmitter
         self.syn_conductance = synapse_conductance
 
-
     def synapse_step(self):
+        # Model of GABAergic input
+        # I_GABA = I_Cl + I_HCO3
+        # I_Cl = GABA_ReceptorOccupancy X GABA_Fraction X g_GABA X (Vm-E_Cl)
+        # I_HCO3 = GABA_ReceptorOccupancy X (1 - GABA_Fraction) X g_GABA X (Vm - E_Cl)
+        # GABA_Fraction = (E_HCO3 - E_GABA) / (E_HCO3 = E_Cl)
 
+        # GABA Receptor Occupancy:
         self.d_r = (self.syn_alpha * self.syn_max_nt_conc * (1 - self.r) - self.syn_beta * self.r) * self.dt
         self.r = self.r + self.d_r
 
-        i_syn = self.syn_conductance * self.r * (self.L1.v - self.L1.E_cl)
-        i_syn = i_syn * 4 / 5  # CL- only contributes about 80% of the GABA current, HCO3- contributes the rest.
-        i_syn = i_syn / F  # converting coloumb to mol
-        i_syn = i_syn * self.dt  # getting the mol input for the timestep
-        cl_entry = i_syn / self.L1.w
-        self.L1.cl_i += cl_entry
+        # GABA Fraction
+        gaba_fraction = (self.L1.E_hco3 - self.L1.E_gaba) / (self.L1.E_hco3 - self.L1.E_cl)
+
+        # Chloride component
+        I_cl = self.r * gaba_fraction * self.syn_conductance * (self.L1.v - self.L1.E_cl)
+        I_cl = I_cl / F  # converting coulomb to mol
+        I_cl = I_cl * self.dt  # getting the mol input for the timestep
+        cl_change = I_cl / self.L1.w  # calculating concentration change
+        self.L1.cl_i += cl_change
+
+        # Bicarb component
+        I_hco3 = self.r * (1 - gaba_fraction) * self.syn_conductance * (self.L1.v - self.L1.E_hco3)
+        I_hco3 = I_hco3 / F  # converting coulomb to mol
+        I_hco3 = I_hco3 * self.dt  # getting the mol input for the timestep
+        hco3_change = I_hco3 / self.L1.w  # calculating concentration change
+        self.L1.hco3_i += hco3_change
 
     def z_change(self):
 
-        if self.L1.cl_i > 0.1e-3:
-            self.L1.z_i += self.z_change_delta
-            if self.adjust_cl:
-                self.L1.cl_i = self.L1.na_i + self.L1.k_i + (self.L1.x_i * self.L1.z_i)
+        if self.L1.cl_i <= 0.1e-3:
+            # Don't change the chloride concentration if it is close to 0
+            return
+        self.L1.z_i += self.z_change_delta
+        if self.adjust_cl:
+            self.L1.cl_i = self.L1.na_i + self.L1.k_i + (self.L1.x_i * self.L1.z_i)
 
     def calc_voltages(self):
         L1_charge = self.L1.na_i + self.L1.k_i + (self.L1.z_i * self.L1.x_i) - self.L1.cl_i
@@ -232,15 +278,27 @@ class Simulator:
 
         self.L1.v = self.FinvC * ((L1_charge * self.L1.w) - (L2_charge * self.L2.w)) / self.L1.sa
 
+        # Nernst equations
         self.L1.E_k = -1 * RTF * np.log(self.L1.k_i / self.L2.k_i)
         self.L1.E_cl = RTF * np.log(self.L1.cl_i / self.L2.cl_i)
+        self.L1.E_hco3 = RTF * np.log(self.L1.hco3_i / self.L2.hco3_i)
+        # GHK equation used to calculate GABA reversal potential
+        numerator = 4 / 5 * self.L1.cl_i + 1 / 5 * self.L1.hco3_i
+        denominator = 4 / 5 * self.L2.cl_i + 1 / 5 * self.L2.hco3_i
+        self.L1.E_gaba = RTF * np.log(numerator / denominator)
 
     def L1L2_step(self):
 
         if self.dynamic_ATPase:
             self.j_p = p_atpase * (self.L1.na_i / self.L2.na_i) ** 3
 
-        self.j_kcc2 = p_kcc2 * (self.L1.E_k - self.L1.E_cl)
+        if self.KCC2_change_on:
+            if self.KCC2_change_start_t < self.run_t < self.KCC2_change_end_t:
+                self.calc_KCC2_value()
+
+
+
+        self.j_kcc2 = self.p_kcc2 * (self.L1.E_k - self.L1.E_cl)
 
         self.current_na = 0
 
@@ -300,6 +358,7 @@ class Simulator:
         self.L1.k_i = self.L1.k_i * self.L1.w / L1_w2
         self.L1.cl_i = self.L1.cl_i * self.L1.w / L1_w2
         self.L1.x_i = self.L1.x_i * self.L1.w / L1_w2
+        self.L1.hco3_i = self.L1.hco3_i * self.L1.w / L1_w2
 
         self.L1.w = L1_w2
 
@@ -394,6 +453,6 @@ class Simulator:
                 group = self.hdf.get('COMPARTMENTS')
                 subgroup = group.get(self.comp_arr[i].name)
                 data_array = self.comp_arr[i].get_array(self.run_t)
-                if self.g_extra_on == True:
+                if self.g_extra_on:
                     data_array.append(self.g_extra)
                 subgroup.create_dataset(name=str(self.steps), data=data_array)
