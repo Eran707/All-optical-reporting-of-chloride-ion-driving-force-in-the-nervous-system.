@@ -259,7 +259,8 @@ class Simulator:
         I_hco3 = I_hco3 / F  # converting coulomb to mol
         I_hco3 = I_hco3 * self.dt  # getting the mol input for the timestep
         hco3_change = I_hco3 / self.L1.w  # calculating concentration change
-        self.L1.hco3_i += hco3_change
+        # self.L1.hco3_i += hco3_change -- Bicarb concentration never changes
+        self.L1.na_i -= hco3_change # instead we think of the sodium (net +) in the cell changing
 
     def z_change(self):
 
@@ -358,7 +359,7 @@ class Simulator:
         self.L1.k_i = self.L1.k_i * self.L1.w / L1_w2
         self.L1.cl_i = self.L1.cl_i * self.L1.w / L1_w2
         self.L1.x_i = self.L1.x_i * self.L1.w / L1_w2
-        self.L1.hco3_i = self.L1.hco3_i * self.L1.w / L1_w2
+
 
         self.L1.w = L1_w2
 
