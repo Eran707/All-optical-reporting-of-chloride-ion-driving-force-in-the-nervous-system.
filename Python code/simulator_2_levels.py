@@ -45,7 +45,6 @@ class Simulator:
         try:
             with h5py.File(self.file_name, mode='w') as self.hdf:
                 self.hdf.create_group('COMPARTMENTS')
-                self.hdf.create_group('ELECTRODIFFUSION')
                 self.hdf.create_group("TIMING")
 
                 print("simulation file ('" + file_name + "') created in base directory")

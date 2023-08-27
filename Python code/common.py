@@ -35,9 +35,8 @@ km = 5 * 10 ** (-14)  # extensional rigidity of RBC at 23 deg, Mohandas and Evan
 # Membrane capacitance
 cm = 2e-4  # (F/dm^2)
 
-
 # External ion concentrations
-nao = 145e-3 # in Molar
+nao = 145e-3  # in Molar
 clo = 119e-3
 ko = 3.5e-3
 xo = 29.5e-3
@@ -54,15 +53,13 @@ diff_constants = {"na": 1.33e-7, "k": 1.96e-7, "cl": 2.03e-7, "x": 0}  # dm2/s
 ###########################
 
 # Leak conductances:
-gna = (2e-3) / (F)
+#gna = (2e-3) / (F) #default
+gna = (3.1e-3) / (F)
 gk = (7e-3) / (F)
 gcl = (2e-3) / (F)  # gna,gk,gcl: conductances in mS/cm^2 conv to S/dm^2 (10^-3/10^-2) - corrected for neuron
 
 # KCC2 and ATPase pumps
-p_kcc2 = (2e-3) / (F)
+#p_kcc2 = (2e-3) / (F) #default
+p_kcc2 = (12e-3) / (F)
+
 p_atpase = 0.1 / F  # C/(dm2·s)
-
-
-
-
-
